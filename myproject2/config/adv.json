@@ -1,0 +1,56 @@
+{
+    "sections" : {
+        "items" : {
+            "i3" : "Item 3 Form Of Organization",
+            "i5" : "Item 5 Information About Your Advisory Business",
+            "i6" : "Item 6 Other Business Activities",
+            "i7a" : "Item 7.A Financial Industry Affiliations",
+            "i7b" : "Item 7.B Private Fund Reporting",
+            "i8" : "Item 8 Participation or Interest in Client Transactions",
+            "i9" : "Item 9 Custody",
+            "i10" : "Item 10 Control Persons",
+            "i11" : "Item 11 Disclosure Information"
+                },
+
+        "schedules" : {
+            "sch_a" : "Schedule A",
+            "sch_b" : "Schedule B",
+            "sch_d" : "Schedule D"
+                },
+
+        "drp_sp" : {
+            "drp" : "DRPs",
+            "sp" : "Signature Page"
+                }
+    },
+
+    "fields" : {
+        "pg1" : [
+            "jurisdiction",
+            "status",
+            "effective_date"
+                ],
+
+        "sch_tbl" : {
+            "CRD No. If None: S.S. No. and Date of Birth, IRS Tax No. or Employer ID No.": "crd_tin_or_ein", 
+            "Control Person": "control_person", 
+            "DE/FE/I": "entity_type", 
+            "Date Status Acquired MM/YYYY": "status_date", 
+            "FULL LEGAL NAME (Individuals: Last Name, First Name, Middle Name)": "legal_name", 
+            "Ownership Code": "ownership_code", 
+            "PR": "public_reporting", 
+            "Status": "status"
+            }
+    },
+
+    "codes" : {
+        "ownership" : {
+            "NA" : "less than 5%",
+            "B" : "10% but less than 25%",
+            "D" : "50% but less than 75%",
+            "A" : "5% but less than 10%",
+            "C" : "25% but less than 50%",
+            "E" : "75% or more"
+                }
+    }
+}
