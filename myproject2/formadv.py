@@ -3,7 +3,7 @@ import shutil
 
 from adviserinfo import *
 
-FIELDS_PATH = os.path.join(adv.CONFIGDIR, 'fields_map', 'advfiling_fields_map.json')
+FIELDS_PATH = os.path.join(settings.CONFIGDIR, 'fields_map', 'advfiling_fields_map.json')
 
 PERCENT_RANKINGS = {
 	u"0 percent": 0,
@@ -54,19 +54,19 @@ def to_usd(series):
     return series.quickmap(usdformat)
 
 class AdvFiling(StageTable):
-    ADVDIR = mkdir(adv.DATADIR, 'formadv')
+    ADVDIR = mkdir(settings.DATADIR, 'formadv')
     ZIPDIR = mkdir(ADVDIR, 'zipfiles')
     EXTRACTDIR = mkdir(ADVDIR, 'unzipped')
     PROCESSED = mkdir(ADVDIR, 'processed')
     IMPORTED = mkdir(ADVDIR, 'imported')
     DESCDIR = mkdir(IMPORTED, 'descriptions')
-    LISTDIR = mkdir(adv.BASEDIR, 'lists')
+    LISTDIR = mkdir(settings.BASEDIR, 'lists')
     COMPANYLIST_PATH = mkpath(LISTDIR, 'companylist.csv')
     PREVIOUSQTR_PATH = mkpath(LISTDIR, 'previousqtr.csv')
 
     def __init__(self, path, fields_path = FIELDS_PATH, table = 'advfiling', **kwds):
         super(AdvFiling, self).__init__(path, fields_path = fields_path, table = table, **kwds)
-        self.outfile = mkpath(self.PROCESSED, ospath.basename(self.outfile))
+        self.outfile = mkpath(self.PROCESSED, OSPath.basename(self.outfile))
 
     @classmethod
     def get_formadvs(cls):
@@ -74,7 +74,7 @@ class AdvFiling(StageTable):
         for link_tag in br.filter_links(r'\d{6}\.zip'):
             url = link_tag.url
             link = "https://www.sec.gov/%s" % url
-            br.download(link, output_file = mkpath(cls.ZIPDIR, ospath.split(url)[-1]))
+            br.download(link, output_file = mkpath(cls.ZIPDIR, OSPath.split(url)[-1]))
 
     @classmethod
     def unzip_formadvs(cls):
@@ -143,7 +143,7 @@ class AdvFiling(StageTable):
     @dbfunc(IapdDB)
     def store_descdata(cls, db):
         for table in db.desctables:
-            outfile = ospath.join(cls.LISTDIR, table + ".csv")
+            outfile = OSPath.join(cls.LISTDIR, table + ".csv")
             if table != 'disclosures':
                 results_to_csv(outfile,
                     db.select_grouped_aggregate(table, 'crd','formadv_id'))
@@ -179,14 +179,14 @@ class AdvFiling(StageTable):
                     db.insert(newdesc.assign(id = np.nan)\
                         .ix[:, ['id', 'desc', 'type']], 'descriptions')
 
-                descfile = ospath.join(cls.DESCDIR, "%s_%s.csv" % (row.id, k))
+                descfile = OSPath.join(cls.DESCDIR, "%s_%s.csv" % (row.id, k))
                 results_to_csv(descfile, v.loc[v.value > 0]\
                     .assign(desc = v.desc.quickmap(db.description_map)))
 
                 if k != 'advisory_activities':
                     db.load_csv(descfile, k)
 
-                if not ospath.exists(descfile):
+                if not OSPath.exists(descfile):
                     shutil.move(descfile, descdir)
 
             db.affectrows("update formadv set rows_original =  %s where id = %s"\
@@ -273,7 +273,7 @@ class AdvFiling(StageTable):
 
     @property
     def companylist(self):
-        if not ospath.exists(self.COMPANYLIST_PATH):
+        if not OSPath.exists(self.COMPANYLIST_PATH):
             self.store_companylist()
         return pd.read_csv(self.COMPANYLIST_PATH)
 

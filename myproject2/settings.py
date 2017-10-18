@@ -1,9 +1,9 @@
-from stagelib.fileio import ospath, mkdir
+from stagelib.fileIO import OSPath, mkdir
 
-BASEDIR = ospath.dirname(ospath.abspath(__file__))
+BASEDIR = OSPath.dirname(OSPath.abspath(__file__))
 DATADIR = mkdir(BASEDIR, 'data')
+LOGDIR = mkdir('logs')
 CONFIGDIR = mkdir(BASEDIR, 'config')
-CACHEDIR = mkdir(DATADIR, 'datacache')
 
 LOGIN = {
     "user": "josh",
