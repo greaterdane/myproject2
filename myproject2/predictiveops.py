@@ -33,7 +33,7 @@ class AdviserPage(Company):
 #bolder-text mb0 cp-summary
 
 br = PredictiveOpsBrowser()
-ap = AdviserPage(108149, br)
+ap = AdviserPage(127831, br)
 direct_owners_title = ap.br.findtag('h4', text = re.compile('Direct Owners'))
 direct_owner_names = [tag for tag in direct_owners_title.find_next_siblings()
                       if tag.attrs['class'] == ["bolder-text", "mb0"]]
@@ -51,11 +51,11 @@ for i, name in enumerate(direct_owner_names, 1):
                 break
         group.append(tag)
     data = {}
-    data['controlperson'] = None
+    data['controlperson'] = False
     data['name'] = clean_tag(name)
     for gtag in (g for g in group if g):
         if gtag.attrs['class'] == ["bolder-text", "mb0", "cp-summary"]:
-            data['controlperson'] = gtag.text
+            data['controlperson'] = True
         else:
             searched = re_DIRECTOWNERS.search(gtag.text)
             if searched:
