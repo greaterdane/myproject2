@@ -1,4 +1,5 @@
 import re
+from collections import defaultdict
 from stagelib import dictupgrade, mergedicts
 from stagelib import isearch
 from stagelib.web import *
@@ -7,8 +8,22 @@ from adviserinfo import Company
 
 directowner_search = isearch(r'^\n(?P<title>[A-Z]+.*?) +\(since (?P<since>\d+\/\d+)\)\n+Ownership Percentage: +(?P<ownership>.*?)\n')
 plaintiff_search = isearch(r'^Plaintiff: +(?P<plaintiff>.*?$)')
-address_search = isearch(r'^(?P<address>.*?)\s+Phone:(?P<phone>[^\s]+)\s+Fax:(?P<fax>[^\s]+)')
+address_search = isearch(r'^(?P<address>.*?)(?:\s+Phone:\s+|$)(?P<phone>[^\s]+)?(?:\s+Fax:\s+)?(?P<fax>[^\s]+)?')
 location_topic = isearch(r'books|other office')
+id_search = isearch(r'/(?P<id>\d+$)')
+re_DESCRIPTION = re.compile(r'(^.*?)\. +The firm is based in ([A-Z].*?[A-Z]\.) As of.*?$')
+
+re_FUNDINFODICT = dictupgrade({
+    'fundtype' : '^(.*?)\n\n',
+    'region' : '\n\n(.*?)\n\nGAV:',
+    'gav' : 'GAV: (\$(?:\s+)?\d+.*?)\s+',
+    'reportdate' : '\(reported: (\d{4}-\d{2}-\d{2})\)',
+    'numberofowners' : '\n\n(\d+) Beneficial Owners',
+    'pctclients_invested' : '(\d+)% of clients invested',
+    'manager' : 'Managers: (.*?)\n\n',
+    'feederfund' : 'Feeder fund name: (.*?)\n\n',
+    'otheradvisers' : 'Other advisers: (.*?)$',
+    }, isearch)
 
 re_DRPDICT = dictupgrade({
     'filed' : 'Filed: (\d+\/\d+\/\d+)\s+',
@@ -21,7 +36,7 @@ re_DRPDICT = dictupgrade({
     'sanctions' : 'Sanctions: +([A-Z]+.*?$)',
         }, isearch)
 
-TOPICS_OF_INTEREST = [
+TOPICS = [
     'Books and Records Locations',
     'Administrators',
     'Auditors',
@@ -32,8 +47,23 @@ TOPICS_OF_INTEREST = [
     'Civil DRPs',
     'Regulatory DRPs',
     'Private Residence',
-    'Public Office'
+    'Public Office',
+    'Administrators'
         ]
+
+def siblingtext(tag):
+    return cleantag(tag.find_next_sibling())
+
+def parse_regexmap(text, regexmap):
+    data = {}
+    for k, v in regexmap.items():
+        __ = v(text)
+        if __:
+            res = __.group(1)
+        else:
+            res = None
+        data.update({k : res})
+    return data
 
 class PredictiveOpsBrowser(HomeBrowser):
     def __init__(self, starturl = 'https://predictiveops.com'):
@@ -42,11 +72,34 @@ class PredictiveOpsBrowser(HomeBrowser):
     def adviserurl(self, crd):
         return self.build_link(r'/advisers/{}'.format(crd))
 
+    def fundurl(self, linktag):
+        return self.build_link(linktag['href'])
+
 class AdviserPage(Company):
     def __init__(self, crd, br):
         super(AdviserPage, self).__init__(crd)
         self.br = br
         self.br.open(br.adviserurl(crd))
+
+    @classmethod
+    def getdata(cls, crd, br):
+        obj = cls(crd, br)
+        funds = []
+        __ = {
+            'crd' : crd,
+            'description' : obj.firmdescription,
+            'info' : obj.getsubtopics(),
+            'people' : obj.get_controlpersons(),
+            'relyingadvisers' : obj.relyingadvisers,
+                }
+
+        linktags = obj.fundlinks
+        if not linktags:
+            return __
+
+        for linktag in linktags:
+            funds.append(obj.getfundinfo(linktag))
+        return mergedicts(__, funds = funds)
 
     @property
     def soup(self):
@@ -56,64 +109,67 @@ class AdviserPage(Company):
     def firmdescription(self):
         title = self.soup.find('h4',
             text = re.compile('firm overview', re.I))
-        return clean_tag(title.find_next_sibling())
+        return re_DESCRIPTION.sub(r'\1, based in \2',
+            siblingtext(title))
 
     @property
     def fundlinks(self):
         return self.soup.find_all('a',
-            attrs = {'href' : re.compile(r'funds')})
+            attrs = {'href' : re.compile(r'Funds')})
     
     @property
     def relyingadvisers(self):
-        return self.soup.find_all(lambda tag: tag.name == 'p'
-            and tag.find_previous('h4').text == "Relying Advisers")
+        return cleantags(self.soup.find_all(lambda tag: tag.name == 'p'
+            and tag.find_previous('h4').text == "Relying Advisers"))
 
     @property
     def subtopics(self):
-        st = self.soup.find_all(lambda tag: tag.name == 'p'
-            and tag.get('class') == ['bolder-text', 'mb0'])
-        __ = self.relyingadvisers
-        return [i for i in st if i not in __]
+        _ = defaultdict(list)
+        subtopics = self.soup.find_all(
+            lambda tag: tag.name == 'p' 
+                and tag.get('class') == ['bolder-text', 'mb0'])
+        for i in subtopics:
+            topic = re.sub(r'(^.*?)(?:\s+\(\d+\))',
+                r'\1', i.find_previous('h4').text)
+            if topic in TOPICS:
+                _[topic.replace(' ', '_').lower()].append(i)
+        return _
 
-    def getdrp(self, topic, plaintiff):
-        data = {
-            'plaintiff' : plaintiff_search(plaintiff.text).group(1),
-            'category' : clean_tag(topic).replace(' ', '_').lower() ##Add this in a decorator, most data seems to follow this pattern (end)
-                }
-        text = clean_tag(plaintiff.find_next_sibling()) ##Add this in a decorator, most data seems to follow this pattern (beginning)
-        for k, v in re_DRPDICT.items():
-            __ = v(text)
-            if __:
-                res = __.group(1)
-            else:
-                res = None
-            data.update({k : res})
+    def getdrp(self, plaintiff):
+        return mergedicts(
+            parse_regexmap(siblingtext(plaintiff), re_DRPDICT),
+            plaintiff = plaintiff_search(cleantag(plaintiff)).group(1)
+                )
+
+    def getlocation(self, location):
+        _ = siblingtext(location).replace('\n', ' ')
+        return mergedicts(address_search(_).groupdict(),
+            {'business' : cleantag(location)})
+
+    def getbusinessinfo(self, topic, tag):
+        return {topic.rstrip('s') : cleantag(tag), 'info' : siblingtext(tag)}
+
+    def getfundinfo(self, linktag):
+        _ = linktag.find_next('p').text.strip()
+        self.br.open(br.fundurl(linktag))
+        __ = mergedicts(self.getsubtopics(),
+            id_search(self.br.fundurl(linktag)).groupdict(),
+            fundinfo = parse_regexmap(_, re_FUNDINFODICT))
+        pause(123, 456)
+        return __
+
+    def getsubtopics(self):
+        data = defaultdict(list)
+        for topic, tags in self.subtopics.items():
+            for tag in tags:
+                _ = plaintiff_search(tag.text)
+                if _:
+                    data[topic].append(self.getdrp(tag))
+                elif location_topic(topic):
+                    data[topic].append(self.getlocation(tag))
+                else:
+                    data['businesses'].append(self.getbusinessinfo(topic, tag))
         return data
-
-    def get_location(self, topic, location):
-        return address_search(location).groupdict()
-        
-    def get_subtopics(self):
-        for subtopic in self.subtopics:
-            topic = subtopic.find_previous('h4')
-            if topic.text not in TOPICS_OF_INTEREST:
-                continue
-            ps = plaintiff_search(subtopic.text)
-            print topic
-            print subtopic
-            if ps:
-                print self.getdrp(topic, subtopic)
-                #yield self.getdrp(topic, subtopic)
-            elif location_topic(topic.text):
-                print subtopic
-                #yield get_location(topic, subtopic)
-            #custodians, auditors, prime brokers are just {topic : subtopic}
-
-            #for sibling in subtopic.find_next_siblings():
-            #    data = clean_tag(sibling)
-            #    text = ''.join(_[:-1])
-            #    ting = mergedicts(dictupgrade(self.getdrp, text),
-            #        {'plaintiff' : ps.group(1)})
 
     def get_controlpersons(self):
         title = self.soup.find('h4', text = re.compile('^Direct Owners'))
@@ -133,9 +189,10 @@ class AdviserPage(Company):
                     if tag == names[i]:
                         break
                 group.append(tag)
+
             data = {}
             data['controlperson'] = False
-            data['name'] = clean_tag(name)
+            data['name'] = cleantag(name)
             for tag2 in (g for g in group if g):
                 if tag2.attrs.get('class') == ["bolder-text", "mb0", "cp-summary"]:
                     data['controlperson'] = True
@@ -146,7 +203,8 @@ class AdviserPage(Company):
             owners.append(data)
         return owners
 
-
 br = PredictiveOpsBrowser()
-#self = AdviserPage(130373, br)
-self = AdviserPage(127831, br)
+#put it all together
+self = AdviserPage(130373, br)
+#AdviserPage.getdata(130373, br)
+#self = AdviserPage(127831, br)
