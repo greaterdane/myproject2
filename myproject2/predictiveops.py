@@ -4,13 +4,13 @@ from stagelib import dictupgrade, mergedicts
 from stagelib import isearch
 from stagelib.web import *
 
-from adviserinfo import Company
+from adviserinfo import InvestmentAdviser
 
 directowner_search = isearch(r'^\n(?P<title>[A-Z]+.*?) +\(since (?P<since>\d+\/\d+)\)\n+Ownership Percentage: +(?P<ownership>.*?)\n')
 plaintiff_search = isearch(r'^Plaintiff: +(?P<plaintiff>.*?$)')
 address_search = isearch(r'^(?P<address>.*?)(?:\s+Phone:\s+|$)(?P<phone>[^\s]+)?(?:\s+Fax:\s+)?(?P<fax>[^\s]+)?')
 location_topic = isearch(r'books|other office')
-id_search = isearch(r'/(?P<id>\d+$)')
+re_ID = re.compile(r'/(?P<id>\d+$)')
 re_DESCRIPTION = re.compile(r'(^.*?)\. +The firm is based in ([A-Z].*?[A-Z]\.) As of.*?$')
 
 re_FUNDINFODICT = dictupgrade({
@@ -70,12 +70,12 @@ class PredictiveOpsBrowser(HomeBrowser):
         super(PredictiveOpsBrowser, self).__init__(starturl = starturl)
 
     def adviserurl(self, crd):
-        return self.build_link(r'/advisers/{}'.format(crd))
+        return self.buildlink(r'/advisers/{}'.format(crd))
 
     def fundurl(self, linktag):
-        return self.build_link(linktag['href'])
+        return self.buildlink(linktag['href'])
 
-class AdviserPage(Company):
+class AdviserPage(InvestmentAdviser):
     def __init__(self, crd, br):
         super(AdviserPage, self).__init__(crd)
         self.br = br
@@ -84,11 +84,10 @@ class AdviserPage(Company):
     @classmethod
     def getdata(cls, crd, br):
         obj = cls(crd, br)
-        funds = []
         __ = {
             'crd' : crd,
             'description' : obj.firmdescription,
-            'info' : obj.getsubtopics(),
+            'data' : obj.getsubtopics(),
             'people' : obj.get_controlpersons(),
             'relyingadvisers' : obj.relyingadvisers,
                 }
@@ -97,6 +96,7 @@ class AdviserPage(Company):
         if not linktags:
             return __
 
+        funds = []
         for linktag in linktags:
             funds.append(obj.getfundinfo(linktag))
         return mergedicts(__, funds = funds)
@@ -115,7 +115,7 @@ class AdviserPage(Company):
     @property
     def fundlinks(self):
         return self.soup.find_all('a',
-            attrs = {'href' : re.compile(r'Funds')})
+            attrs = {'href' : re_ID})
     
     @property
     def relyingadvisers(self):
@@ -126,7 +126,7 @@ class AdviserPage(Company):
     def subtopics(self):
         _ = defaultdict(list)
         subtopics = self.soup.find_all(
-            lambda tag: tag.name == 'p' 
+            lambda tag: tag.name == 'p'
                 and tag.get('class') == ['bolder-text', 'mb0'])
         for i in subtopics:
             topic = re.sub(r'(^.*?)(?:\s+\(\d+\))',
@@ -155,7 +155,7 @@ class AdviserPage(Company):
         __ = mergedicts(self.getsubtopics(),
             id_search(self.br.fundurl(linktag)).groupdict(),
             fundinfo = parse_regexmap(_, re_FUNDINFODICT))
-        pause(123, 456)
+        pause(17, 49)
         return __
 
     def getsubtopics(self):
@@ -205,6 +205,7 @@ class AdviserPage(Company):
 
 br = PredictiveOpsBrowser()
 #put it all together
-self = AdviserPage(130373, br)
-#AdviserPage.getdata(130373, br)
+#self = AdviserPage(130373, br)
 #self = AdviserPage(127831, br)
+#AdviserPage.getdata(130373, br)
+#AdviserPage.getdata(127831, br)
