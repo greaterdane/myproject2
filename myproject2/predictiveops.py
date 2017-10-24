@@ -75,9 +75,9 @@ class PredictiveOpsBrowser(HomeBrowser):
     def fundurl(self, linktag):
         return self.buildlink(linktag['href'])
 
-class AdviserPage(InvestmentAdviser):
+class AdviserPage(object):
     def __init__(self, crd, br):
-        super(AdviserPage, self).__init__(crd)
+        self.crd = crd
         self.br = br
         self.br.open(br.adviserurl(crd))
 
