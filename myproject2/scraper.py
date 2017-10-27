@@ -32,7 +32,7 @@ class IapdBrowser(HomeBrowser):
 
 if __name__ == '__main__':
     self = IapdBrowser()
-    self._logger = configurelogging(logging.getLogger(), extrakeys = ['crd'])
+    self._logger = configurelogging(logging.getLogger(), extrakeys = ['crd'], logdir = 'logs')
     browsed = set(pd.read_csv('adviserinfo.log',
         delimiter = '|',
         header = None,

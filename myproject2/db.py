@@ -1,22 +1,14 @@
-import os
-from stagelib.web import HomeBrowser
 from stagelib.db import *
-
-from adviserinfo2 import *
+from stagelib import OSPath
+from stagelib import mkdir as newfolder
 
 database = getdb('adviserinfo', hostalias = 'production')
-BaseModel = getbasemodel(database)
-
-def normalize_formadvs():
-    parser = FormADVStage()
-    formadvs = FormADV.select()
-    for formadv in formadvs:
-        formadv.data
 
 def setup():
     database.create_tables([
         FormADV,
         Adviser,
+        AlternateName,
         JobTitle,
         Person,
         Phone,
@@ -38,16 +30,16 @@ def setup():
         FundBackOffice],
             safe = True)
 
-    FormADV.download()
-    filelist = FormADV.listforms()
-    FormADV.tryinsert(filelist)
+BaseModel = get_basemodel(database)
 
-class FormADV(BaseModel):
+class AdvBaseModel(BaseModel):
+    @classmethod
+    def insertdf(cls, df, extrafields = ['filing', 'adviser', 'formadv'], **kwds):
+        return super(AdvBaseModel, cls).insertdf(df, extrafields = extrafields, **kwds)
+    
+class FormADV(AdvBaseModel):
     date = DateField()
     filename = CharField()
-
-    def __repr__(self):
-        return self.date.strftime("FormADV: {}/%Y-%m-%d".format(OSPath.basename(self.filename)))
 
     class Meta:
         db_table = 'formadvs'
@@ -56,126 +48,58 @@ class FormADV(BaseModel):
                 )
 
     @classmethod
-    def getdates(cls):
-        return {row.id : row.date for row in cls.select()}
+    def datesdict(cls):
+        return cls.getdict('date')
 
-    @classmethod
-    def listforms(cls):
-        return sorted([
-            {'date' : get_filingdate(path), 'filename' : path}
-            for path in Folder.listdir(zipfolder)
-                ], key = lambda k: k['date'])
+    def __repr__(self):
+        return self.date.strftime("FormADV: {}/%Y-%m-%d".format(OSPath.basename(self.filename)))
 
-    @classmethod
-    def download(cls):
-        br = HomeBrowser(starturl = r'https://www.sec.gov/help/foiadocsinvafoiahtm.html')
-        for linktag in br.filterlinks(r'\d{6}\.zip'):
-            url = linktag.url
-            link = "https://www.sec.gov/%s" % url
-            _ = os.path.split(link)[-1]
-            br.download(link, outfile = mkpath(cls._meta.zipfolder, _))
-
-    @classmethod
-    def get_dailyxml(cls):
-        pass
-
-    @property
-    def data(self):
-        return read_formadv(self.filename)
-
-class Adviser(BaseModel):
+class Adviser(AdvBaseModel):
     crd = IntegerField(null = False, constraints = [Check('crd > 0')], index = True, primary_key = True)
     secnumber = CharField(max_length = 15)
     name = CharField(max_length = 255, null = False)
     legalname = CharField(max_length = 255)
     registered = BooleanField(default = True)
-    
-    def __repr__(self):
-        return "{} (CRD# {})".format(self.name, self.crd)
+    #namechangedate = DateField()
 
     class Meta:
         db_table = 'advisers'
 
+    @classmethod
+    def insertdf(cls, df, extrafields = ['crd'], **kwds):
+        fromdb = cls.to_dataframe(cls.select(cls.crd, cls.secnumber, cls.name))
+        if not fromdb.empty:
+            namechanges = df.loc[
+                (df.crd.isin(fromdb.crd)) & ~(df.name.replace(',', '').isin(fromdb.name.replace(',', '')))
+                    ].ix[:, ['crd', 'secnumber', 'name', 'legalname']]
+    
+            oldnames = fromdb.loc[
+                fromdb.crd.isin(namechanges.crd)
+                    ].rename(columns = {'crd' : 'adviser'})
+            
+            for change in namechanges.to_dict(orient = 'records'):
+                cls.update(**change).where(cls.crd == change['crd']).execute()
+    
+            AlternateName.insertdf(oldnames)
+            df = df.loc[~df.crd.isin(namechanges.crd)]
+
+        return super(Adviser, cls).insertdf(df,
+            extrafields = extrafields, **kwds)
+
     @property
     def dirname(self):
-        return to_datafolder(self.crd)
+        return newfolder('data', self.crd)
 
     @property
     def brochuredir(self):
         return newfolder(self.dirname, 'brochures')
 
-class JobTitle(BaseModel):
-    name = CharField(max_length = 120, unique = True)
+    def __repr__(self):
+        return "{} (CRD# {})".format(self.name, self.crd)
 
-    class Meta:
-        db_table = 'jobtitles'
-
-class Person(BaseModel):
-    formadv = ForeignKeyField(FormADV, related_name = 'all_people')
-    adviser = ForeignKeyField(Adviser, related_name = 'people')
-    title = ForeignKeyField(JobTitle, related_name = 'names')
-    firstname = CharField(max_length = 50)
-    lastname = CharField(max_length = 50)
-
-    class Meta:
-        db_table = 'people'
-        indexes = (
-            (('adviser', 'title', 'firstname', 'lastname'), True),
-                )
-
-class ContactNumber(BaseModel):
-    number = CharField(max_length = 30)
-
-    class Meta:
-        indexes = (
-            (('adviser', 'number'), True),
-                )
-
-class Phone(ContactNumber):
-    formadv = ForeignKeyField(FormADV, related_name = 'all_phonenumbers')
-    adviser = ForeignKeyField(Adviser, related_name = 'phonenumbers')
-
-class Fax(ContactNumber):
-    formadv = ForeignKeyField(FormADV, related_name = 'all_faxnumbers')
-    adviser = ForeignKeyField(Adviser, related_name = 'faxnumbers')
-
-class Address(BaseModel):
-    formadv = ForeignKeyField(FormADV, related_name = 'all_addresses')
-    adviser = ForeignKeyField(Adviser, related_name = 'addresses')
-    fulladdress = CharField(null = False)
-    address1 = CharField(max_length = 175)
-    address2 = CharField(max_length = 50)
-    city = CharField(max_length = 50)
-    state = CharField(max_length = 2)
-    zip = CharField(max_length = 15)
-    country = CharField(max_length = 25)
-
-    class Meta:
-        indexes = (
-            (('adviser', 'fulladdress'), True),
-                )
-
-class Website(BaseModel):
-    adviser = ForeignKeyField(Adviser, related_name = 'websites')
-    url = CharField(max_length = 255)
-
-    class Meta:
-        db_table = 'websites'
-        indexes = (
-            (('adviser', 'url'), True),
-                )
-
-class SecFiler(BaseModel):
-    adviser = ForeignKeyField(Adviser, primary_key = True)
-    cik = IntegerField()
-
-class Filing(BaseModel):
-    adviser = ForeignKeyField(Adviser, null = False, related_name = 'filings')
-    formadv = ForeignKeyField(FormADV, null = False, related_name = 'filing_data')
-    assetsundermgmt = FloatField(null = True)
-    numberofaccts = FloatField(null = True)
-    numberofclients = FloatField(null = True)
-    numberofemployees = FloatField(null = True)
+class Filing(AdvBaseModel):
+    adviser = ForeignKeyField(Adviser, related_name = "filings")
+    formadv = ForeignKeyField(FormADV, related_name = "all_filings")
     
     class Meta:
         db_table = 'filings'
@@ -183,8 +107,113 @@ class Filing(BaseModel):
         indexes = (
             (('adviser', 'formadv'), True),
                 )
+    
+    @classmethod
+    def getdict(cls, formadv):
+        rows = cls.to_records(cls.select()
+            .where(cls.formadv == formadv.id))
+        return {row['adviser'] : row['id'] for row in rows}
 
-class Description(BaseModel):
+class SecFiler(AdvBaseModel):
+    adviser = ForeignKeyField(Adviser, primary_key = True, related_name = 'secfilers')
+    cik = IntegerField()
+
+    class Meta:
+        db_table = 'secfilers'
+
+class FilingBaseModel(AdvBaseModel):
+    filing = ForeignKeyField(Filing, primary_key = True)
+
+    class Meta:
+        order_by = ('filing', )
+    
+    @classmethod
+    def insertdf(cls, df, extrafields = ['filing'], **kwds):
+        return super(FilingBaseModel, cls).insertdf(df,
+            extrafields = extrafields, **kwds)
+        
+
+class JobTitle(AdvBaseModel):
+    name = CharField(max_length = 120, unique = True)
+
+    class Meta:
+        db_table = 'jobtitles'
+
+class Person(AdvBaseModel):
+    adviser = ForeignKeyField(Adviser, related_name = 'people')
+    title = CharField(max_length = 30)
+    firstname = CharField(max_length = 50, null = False)
+    lastname = CharField(max_length = 50, null = False)
+    phone = CharField(max_length = 30)
+    date = DateField()
+
+    class Meta:
+        db_table = 'people'
+        indexes = (
+            (('adviser', 'title', 'firstname', 'lastname'), True),
+                )
+
+    @classmethod
+    def insertdf(cls, df, extrafields = ['adviser'], **kwds):
+        if not hasattr(df, 'firstname'):
+            db_logger.warning("'Person' data has no 'firstname' attribute.  0 rows inserted.")
+            return 0
+        return super(Person, cls).insertdf(df,
+            extrafields = extrafields, **kwds)
+        
+class AlternateName(FilingBaseModel):  #to handle name changes
+    secnumber = CharField(max_length = 15)
+    name = CharField(max_length = 255, null = False)
+
+    class Meta:
+        db_table = 'alternate_names'
+        indexes = (
+            (('name', 'secnumber'), True),
+                )
+
+class Phone(FilingBaseModel):
+    phone = CharField(max_length = 30)
+
+    class Meta:
+        indexes = (
+            (('phone',), True),
+                )
+
+class Fax(FilingBaseModel):
+    fax = CharField(max_length = 30)
+    class Meta:
+        indexes = (
+            (('fax',), True),
+                )
+
+class Address(FilingBaseModel):
+    fulladdress = CharField(null = False)
+    address1 = CharField(max_length = 175)
+    address2 = CharField(max_length = 50)
+    city = CharField(max_length = 50)
+    state = CharField(max_length = 2)
+    zip = CharField(max_length = 15)
+    country = CharField(max_length = 25)
+    
+    class Meta:
+        indexes = (
+            (('address1', 'address2', 'city', 'state', 'zip', 'country', ), True),
+                )
+
+class Website(FilingBaseModel):
+    url = CharField(max_length = 255)
+    class Meta:
+        indexes = (
+            (('url', ), True),
+                )
+
+class Numbers(FilingBaseModel):
+    assetsundermgmt = FloatField(null = True)
+    numberofaccts = FloatField(null = True)
+    numberofclients = FloatField(null = True)
+    numberofemployees = FloatField(null = True)
+
+class Description(BaseModel): ##HERE
     id = PrimaryKeyField(null=False)
     text = CharField(max_length = 255, unique = True)
     specific = BooleanField(default = False)
@@ -192,59 +221,68 @@ class Description(BaseModel):
     class Meta:
         db_table = 'descriptions'
 
-class ClientType(BaseModel):
-    adviser = ForeignKeyField(Adviser, null = False, related_name = 'client_types')
+    @classmethod
+    def textdict(cls):
+        return cls.getdict('text', reversed = True)
+
+class ClientType(FilingBaseModel):
     description = ForeignKeyField(Description, related_name = 'client_types')
     percentage = FloatField(null = False)
 
     class Meta:
         db_table = 'client_types'
 
-class ClientTypeAUM(BaseModel):
-    adviser = ForeignKeyField(Adviser, null = False, related_name = 'client_types_aum')
+class ClientTypeAUM(FilingBaseModel):
     description = ForeignKeyField(Description, related_name = 'client_types_aum')
     percentage = FloatField(null = False)
 
     class Meta:
-        db_table = 'client_types_aum'
+        db_table = 'pct_aum'
 
-class Compensation(BaseModel):
-    adviser = ForeignKeyField(Adviser, null = False, related_name = 'compensated_by')
+class Compensation(FilingBaseModel):
     description = ForeignKeyField(Description, related_name = 'compensation')
     percentage = FloatField(null = False)
 
-class Disclosure(BaseModel):
-    adviser = ForeignKeyField(Adviser, null = False, related_name = 'disclosures')
+class Disclosure(FilingBaseModel):
     description = ForeignKeyField(Description, related_name = 'disclosures')
-    count = IntegerField(null = False)
+    number = IntegerField(null = False)
 
-class Courtcase(BaseModel):
+    class Meta:
+        db_table = 'disclosures'
+
+class Courtcase(AdvBaseModel):
     id = PrimaryKeyField(null=False)
     adviser = ForeignKeyField(Adviser, null = False, related_name = 'courtcases')
-    date = DateField()
     number = CharField(max_length = 30, help_text = "Docket or case number.")
     district = CharField(max_length = 30)
-    
+    resolution = CharField()
+    renderedfine = FloatField()
+    sanctions = CharField()
+    date = DateField()
+
     class Meta:
         db_table = 'courtcases'
 
-class Allegation(BaseModel):
+class Allegation(AdvBaseModel):
     case = ForeignKeyField(Courtcase, primary_key = True)
     allegation = TextField()
 
     class Meta:
         db_table = 'allegations'
 
-class PrivateFund(BaseModel):
+class PrivateFund(AdvBaseModel):
     adviser = ForeignKeyField(Adviser)
-    fund = IntegerField()
+    fund_id = IntegerField()
     name = CharField(max_length = 255)
+    type = CharField(max_length = 100)
     assetsundermgmt = FloatField()
+    region = CharField()
+    dated = DateField()
 
     class Meta:
         db_table = 'privatefunds'
 
-class OtherBusiness(BaseModel):
+class OtherBusiness(AdvBaseModel):
     name = CharField(max_length = 255, null = False)
     type = CharField(max_length = 100, null = False)
     
@@ -253,10 +291,13 @@ class OtherBusiness(BaseModel):
             (('name', 'type'), True),
                 )
 
-class BusinessRelation(BaseModel):
+class BusinessRelation(AdvBaseModel):
     business = ForeignKeyField(OtherBusiness)
     adviser = ForeignKeyField(Adviser)
 
-class FundBackOffice(BaseModel):
+class FundBackOffice(AdvBaseModel):
+    id = PrimaryKeyField()
     business = ForeignKeyField(OtherBusiness)
     privatefund = ForeignKeyField(PrivateFund)
+    
+setup()

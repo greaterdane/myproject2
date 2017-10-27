@@ -4,20 +4,18 @@ from stagelib import dictupgrade, mergedicts
 from stagelib import isearch
 from stagelib.web import *
 
-from adviserinfo import InvestmentAdviser
-
 directowner_search = isearch(r'^\n(?P<title>[A-Z]+.*?) +\(since (?P<since>\d+\/\d+)\)\n+Ownership Percentage: +(?P<ownership>.*?)\n')
 plaintiff_search = isearch(r'^Plaintiff: +(?P<plaintiff>.*?$)')
 address_search = isearch(r'^(?P<address>.*?)(?:\s+Phone:\s+|$)(?P<phone>[^\s]+)?(?:\s+Fax:\s+)?(?P<fax>[^\s]+)?')
 location_topic = isearch(r'books|other office')
-re_ID = re.compile(r'/(?P<id>\d+$)')
+re_ID = re.compile(r'/(^8\d+$)')
 re_DESCRIPTION = re.compile(r'(^.*?)\. +The firm is based in ([A-Z].*?[A-Z]\.) As of.*?$')
 
 re_FUNDINFODICT = dictupgrade({
     'fundtype' : '^(.*?)\n\n',
     'region' : '\n\n(.*?)\n\nGAV:',
-    'gav' : 'GAV: (\$(?:\s+)?\d+.*?)\s+',
-    'reportdate' : '\(reported: (\d{4}-\d{2}-\d{2})\)',
+    'assetsundermgmt' : 'GAV: (\$(?:\s+)?\d+.*?)\s+',
+    'dated' : '\(reported: (\d{4}-\d{2}-\d{2})\)',
     'numberofowners' : '\n\n(\d+) Beneficial Owners',
     'pctclients_invested' : '(\d+)% of clients invested',
     'manager' : 'Managers: (.*?)\n\n',
@@ -26,11 +24,11 @@ re_FUNDINFODICT = dictupgrade({
     }, isearch)
 
 re_DRPDICT = dictupgrade({
-    'filed' : 'Filed: (\d+\/\d+\/\d+)\s+',
-    'docketnumber' : '(?:DOCKET (?:NO.|NUMBER)|Docket\/Case No.:)\s+([^\s]+)\s+',
-    'court' : 'Court\/Case No\.:(?:\s+)?([A-Z]+.*?)(?:;)?\s+(?:DOCKET N)',
+    'date' : 'Filed: (\d+\/\d+\/\d+)\s+',
+    'number' : '(?:DOCKET (?:NO.|NUMBER)|Docket\/Case No.:)\s+([^\s]+)\s+',
+    'district' : 'Court\/Case No\.:(?:\s+)?([A-Z]+.*?)(?:;)?\s+(?:DOCKET N)',
     'amendedfine' : 'Amended Fine: +(\$(?:\s+)?\d+.*?)\s+',
-    'allegations' : 'Allegations:\s+([A-Z]+.*?)(?:$|\s+Judgement Rendered Fine.*?$)',
+    'allegation' : 'Allegations:\s+([A-Z]+.*?)(?:$|\s+Judgement Rendered Fine.*?$)',
     'resolution' : 'Resolution Details:\s+(.*?)\s+Allegations:',
     'renderedfine' : 'Judgement Rendered Fine: +(\$(?:\s+)?\d+.*?)\s+',
     'sanctions' : 'Sanctions: +([A-Z]+.*?$)',
@@ -79,13 +77,13 @@ class AdviserPage(object):
     def __init__(self, crd, br):
         self.crd = crd
         self.br = br
-        self.br.open(br.adviserurl(crd))
+        self.br.open(self.br.adviserurl(crd))
 
     @classmethod
     def getdata(cls, crd, br):
         obj = cls(crd, br)
         __ = {
-            'crd' : crd,
+            'crd' : str(crd),
             'description' : obj.firmdescription,
             'data' : obj.getsubtopics(),
             'people' : obj.get_controlpersons(),
@@ -147,14 +145,19 @@ class AdviserPage(object):
             {'business' : cleantag(location)})
 
     def getbusinessinfo(self, topic, tag):
-        return {topic.rstrip('s') : cleantag(tag), 'info' : siblingtext(tag)}
+        return {
+            'type' : topic.rstrip('s'),
+            'name' : cleantag(tag),
+            'info' : siblingtext(tag)
+                }
 
     def getfundinfo(self, linktag):
         _ = linktag.find_next('p').text.strip()
-        self.br.open(br.fundurl(linktag))
+        self.br.open(self.br.fundurl(linktag))
         __ = mergedicts(self.getsubtopics(),
-            id_search(self.br.fundurl(linktag)).groupdict(),
-            fundinfo = parse_regexmap(_, re_FUNDINFODICT))
+            fund_id = re_ID.search(self.br.fundurl(linktag)).group(1),
+            fundinfo = parse_regexmap(_, re_FUNDINFODICT),
+            name = linktag.text)
         pause(17, 49)
         return __
 
@@ -203,7 +206,7 @@ class AdviserPage(object):
             owners.append(data)
         return owners
 
-br = PredictiveOpsBrowser()
+#br = PredictiveOpsBrowser()
 #put it all together
 #self = AdviserPage(130373, br)
 #self = AdviserPage(127831, br)
