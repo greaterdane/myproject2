@@ -161,7 +161,8 @@ class Person(AdvBaseModel):
         return super(Person, cls).insertdf(df,
             extrafields = extrafields, **kwds)
         
-class AlternateName(FilingBaseModel):  #to handle name changes
+class AlternateName(AdvBaseModel):  #to handle name changes
+    adviser = ForeignKeyField(Adviser, related_name = 'alternate_names')
     secnumber = CharField(max_length = 15)
     name = CharField(max_length = 255, null = False)
 
