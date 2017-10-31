@@ -20,8 +20,7 @@ class Scrape(Command):
 
     def execute(self):
         scraper = self.args.name
-        crdlist = pd.read_csv('lists/crdlist.csv',
-            squeeze = True).sort_values(ascending = False)
+        crdlist = pd.read_csv('lists/predictive_ops_crdlist.csv',squeeze = True)
 
         if scraper == 'predictive_ops':
             br = PredictiveOpsBrowser()
@@ -72,11 +71,15 @@ class Scrape(Command):
         elif scraper == 'brochure':
             print "Brochure scraper has not been setup.  Goodbye."
 
+class SpreadSheet(Command):
+    pass
+
 if __name__ == '__main__':
 
     sub_command_map = {
         'processadvs': {'class': Process, 'desc': 'Clean all FormADV spreadsheets and write to "preprocessed" directory.'},
         'scrape': {'class': Scrape, 'desc': 'Scrape the internet for various IAPD related info.  This is no life to live :(.'},
+        'spreadsheet': {'class': SpreadSheet, 'desc': 'Create an organized, human-readable spreadsheet for sales and marketing purposes.'},
             }
 
     DataSlayer.start(sub_command_map)

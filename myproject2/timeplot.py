@@ -4,7 +4,7 @@ import bokeh.palettes as colors
 from bokeh.plotting import figure
 from bokeh.layouts import row
 from bokeh.models import ColumnDataSource, Circle, DatetimeTickFormatter, HoverTool, Legend, LinearAxis, Range1d
-from bokeh.embed import components
+#from bokeh.embed import components
 
 def timelineplot(numeric_data):
     fields = numeric_data.drop(['date', 'formadv_id'], axis = 1).columns

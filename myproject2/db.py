@@ -1,5 +1,5 @@
 from stagelib.db import *
-from stagelib import OSPath
+from stagelib import OSPath, from_json, mkpath
 from stagelib import mkdir as newfolder
 
 database = getdb('adviserinfo', hostalias = 'production')
@@ -17,6 +17,7 @@ def setup():
         Website,
         Filing,
         SecFiler,
+        Numbers,
         Description,
         ClientType,
         ClientTypeAUM,
@@ -94,6 +95,14 @@ class Adviser(AdvBaseModel):
     def brochuredir(self):
         return newfolder(self.dirname, 'brochures')
 
+    @property
+    def scheduleD(self):
+        return from_json(mkpath(self.dirname, 'predictiveops.json'))
+
+    @property
+    def privatefunds(self):
+        return self.scheduleD['funds']
+
     def __repr__(self):
         return "{} (CRD# {})".format(self.name, self.crd)
 
@@ -107,6 +116,26 @@ class Filing(AdvBaseModel):
         indexes = (
             (('adviser', 'formadv'), True),
                 )
+
+    @classmethod
+    def mostrecent(cls):
+        alias = cls.alias()
+        subquery = (alias.select( #Subquery to get max filing per adviser.
+            alias.adviser,
+            fn.MAX(alias.id).alias('most_recent'))
+            .group_by(alias.adviser)
+            .alias('most_recent_subquery'))
+        
+        mostrecent = (
+            cls.select(cls.id.alias("filing_id"), Adviser.crd)
+            .join(Adviser)
+            .switch(cls)
+            .join(subquery, on=(
+                (cls.id == subquery.c.most_recent) &
+                (cls.adviser == subquery.c.adviser_id)))
+                    )
+
+        return cls.to_dataframe(mostrecent)
     
     @classmethod
     def getdict(cls, formadv):
@@ -120,6 +149,9 @@ class SecFiler(AdvBaseModel):
 
     class Meta:
         db_table = 'secfilers'
+        indexes = (
+            (('adviser', 'cik', ), True),
+                )
 
 class FilingBaseModel(AdvBaseModel):
     filing = ForeignKeyField(Filing, primary_key = True)
@@ -213,8 +245,13 @@ class Numbers(FilingBaseModel):
     numberofaccts = FloatField(null = True)
     numberofclients = FloatField(null = True)
     numberofemployees = FloatField(null = True)
+    
+    #@classmethod
+    #def insertdf(cls, df, extrafields = ['filing'], **kwds):
+    #    return super(Numbers, cls).insertdf(df.fillna(0),
+    #        extrafields = extrafields, **kwds)
 
-class Description(BaseModel): ##HERE
+class Description(BaseModel):
     id = PrimaryKeyField(null=False)
     text = CharField(max_length = 255, unique = True)
     specific = BooleanField(default = False)
@@ -226,26 +263,30 @@ class Description(BaseModel): ##HERE
     def textdict(cls):
         return cls.getdict('text', reversed = True)
 
-class ClientType(FilingBaseModel):
+class ClientType(AdvBaseModel):
     description = ForeignKeyField(Description, related_name = 'client_types')
+    filing = ForeignKeyField(Filing, related_name = 'client_types')
     percentage = FloatField(null = False)
 
     class Meta:
         db_table = 'client_types'
 
-class ClientTypeAUM(FilingBaseModel):
+class ClientTypeAUM(AdvBaseModel):
     description = ForeignKeyField(Description, related_name = 'client_types_aum')
+    filing = ForeignKeyField(Filing, related_name = 'client_types_aum')
     percentage = FloatField(null = False)
 
     class Meta:
         db_table = 'pct_aum'
 
-class Compensation(FilingBaseModel):
+class Compensation(AdvBaseModel):
     description = ForeignKeyField(Description, related_name = 'compensation')
+    filing = ForeignKeyField(Filing, related_name = 'compensation')
     percentage = FloatField(null = False)
 
-class Disclosure(FilingBaseModel):
+class Disclosure(AdvBaseModel):
     description = ForeignKeyField(Description, related_name = 'disclosures')
+    filing = ForeignKeyField(Filing, related_name = 'disclosures')
     number = IntegerField(null = False)
 
     class Meta:

@@ -8,7 +8,7 @@ directowner_search = isearch(r'^\n(?P<title>[A-Z]+.*?) +\(since (?P<since>\d+\/\
 plaintiff_search = isearch(r'^Plaintiff: +(?P<plaintiff>.*?$)')
 address_search = isearch(r'^(?P<address>.*?)(?:\s+Phone:\s+|$)(?P<phone>[^\s]+)?(?:\s+Fax:\s+)?(?P<fax>[^\s]+)?')
 location_topic = isearch(r'books|other office')
-re_ID = re.compile(r'/(^8\d+$)')
+re_ID = re.compile(r'/(\d+$)')
 re_DESCRIPTION = re.compile(r'(^.*?)\. +The firm is based in ([A-Z].*?[A-Z]\.) As of.*?$')
 
 re_FUNDINFODICT = dictupgrade({
@@ -113,7 +113,7 @@ class AdviserPage(object):
     @property
     def fundlinks(self):
         return self.soup.find_all('a',
-            attrs = {'href' : re_ID})
+            attrs = {'href' : re.compile(r'funds/\d+$')})
     
     @property
     def relyingadvisers(self):

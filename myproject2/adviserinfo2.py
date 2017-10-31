@@ -1,9 +1,15 @@
-import re
+import os, re, gzip
 from functools import partial
 import numpy as np
 import pandas as pd
-from stagelib import OSPath, Csv, Folder, to_single_space, mergedicts, from_json, to_json, mkpath, parsexml, readtable
-from stagelib.web import HomeBrowser
+from selenium import webdriver
+from stagelib import (OSPath, Csv, Folder,
+    utcnow, to_single_space, mergedicts,
+    chunker, floating_point, appendData,
+    from_json, to_json, mkpath,
+    parsexml, readtable)
+
+from stagelib.web import HomeBrowser, pause, USER_AGENT
 import stagelib.record
 from stagelib.stage import Stage
 
@@ -37,7 +43,9 @@ numericrank = {
     "6-10" : 10,
     "1-5" : 5,
     "11-25" : 25,
+    "1-25" : 25,
     "11-50" : 50,
+    "Nov-50" : 50,
     "50-250" : 250,
     "251-500" : 500,
     "500-1000" : 1000,
@@ -58,9 +66,6 @@ def download_formadvs():
         _ = OSPath.split(link)[-1]
         br.download(link, outfile = mkpath(zipfolder, _))
 
-def get_dailyxml():
-    pass #download gzip and extract as xmlfile
-
 def get_filingdate(path):
     return pd.to_datetime(re.sub(r'^.*?ia(\d+)\.zip', r'\1', path))
 
@@ -76,11 +81,133 @@ def read_formadv(path, **kwds):
         false_values = 'N',
         na_values = ['NONE'])
 
+def get_dailyxml_path():
+    return OSPath.abspath(
+        mkpath(xmlfolder,
+            utcnow().strftime(r'IA_FIRM_SEC_Feed_%m_%d_%Y.xml.gz')
+                ))
+
+def get_dailyxml():
+    xmlpath = get_dailyxml_path()
+    if OSPath.exists(xmlpath):
+        os.remove(xmlpath)
+
+    link = HomeBrowser(
+        r'https://www.adviserinfo.sec.gov/IAPD/InvestmentAdviserData.aspx'
+            ).find_link(text = r'SEC Investment Adviser Report')
+
+    profile = webdriver.FirefoxProfile()
+    profile.set_preference("general.useragent.override", USER_AGENT)
+    profile.set_preference("browser.download.folderList", 2)
+    profile.set_preference("browser.download.manager.showWhenStarting", False)
+    profile.set_preference("browser.download.dir", OSPath.abspath(xmlfolder))
+    profile.set_preference("browser.helperApps.neverAsk.saveToDisk", r'application/x-gzip')
+    driver = webdriver.Firefox(profile)
+    driver.get(r'https://www.adviserinfo.sec.gov/IAPD/InvestmentAdviserData.aspx')
+    driver.execute_script(link.attrs[3][1])
+    pause(100, 500)
+    driver.close()
+
 def read_dailyxml():
-    return pd.DataFrame(parsexml(Folder.listdir(xmlfolder)[0], 'Firm', 'FormInfo'))
+    
+    f = gzip.open(get_dailyxml_path(), 'rb')
+    for chunk in chunker(f, chunksize = 100):
+        appendData(mkpath(xmlfolder, 'daily.xml'), ''.join(chunk))
+    f.close() #catch IOerror
+            
+    return pd.DataFrame(parsexml('dailyxml.xml', 'Firm', 'FormInfo'))
 
 def get_outfile(formadv):
     return FormadvStage.get_outfile(formadv.date)
+
+def processfiles(start = 1):
+    advparser = FormadvStage()
+    advparser.info("Starting at entry number {}".format(start))
+    for formadv in db.FormADV.select():
+        if formadv.id >= start:
+            advparser.info("Currently processing '{}'".format(formadv.filename))
+            advparser.normfile(path = formadv.filename, formadv_id = formadv.id)
+
+def parse_scheduleDjson(crd):
+    data = []
+    try:
+        adviser = db.Adviser.get(crd = crd)
+        funds = adviser.privatefunds
+    except (IOError, db.Adviser.DoesNotExist, KeyError):
+        return data
+
+    for fund in funds:
+        row = {
+            'crd' : crd,
+            'adviser' : adviser.name,
+            'fund_id' : fund['fund_id'],
+            'fundname' : fund['name'],
+            'assetsundermgmt' : floating_point(fund['fundinfo'].get('assetsundermgmt', 'n/a')),
+            'fundtype' : fund['fundinfo'].get('fundtype', 'n/a'),
+            'owners' : fund['fundinfo'].get('numberofowners', 'n/a'),
+                }
+
+        if 'businesses' in fund:
+            for business in fund['businesses']:
+                data.append(mergedicts(business, row))
+    return data
+
+def insertdata(start = 1):
+    parser = FormadvStage()
+    infotables = [db.Person, db.Phone, db.Fax, db.Address, db.Website, db.Numbers]
+    desctables = {
+        'client_types' : db.ClientType,
+        'compensation' : db.Compensation,
+        'pct_aum' : db.ClientTypeAUM,
+        'disclosures' : db.Disclosure
+            }
+
+    for formadv in db.FormADV.select():
+        if formadv.id >= start:
+            df = FormadvStage.addnames(
+                readtable(get_outfile(formadv), encoding = 'latin')
+                    ).assign(date = formadv.date)
+            
+            df['numberofemployees'] = FormadvStage.get_number(df, field = 'numberofemployees')
+            df['numberofclients'] = FormadvStage.get_number(df, field = 'numberofclients')
+            numericdata = df[parser.numeric_fields].copy()
+            if any(numericdata.any(axis = 1)):
+                df[parser.numeric_fields] = numericdata.fillna(0)
+
+            db.Adviser.insertdf(df)
+            db.Filing.insertdf(df, extrafields = [])
+            idmap = db.Filing.getdict(formadv)
+            df['filing'] = df.crd.map(idmap)
+            db.SecFiler.insertdf(df, extrafields = ['adviser'])
+
+            for table in infotables:
+                inserted = table.insertdf(df, chunksize = 5000)
+            
+            typesmap = FormadvStage.get_types(df)
+            if not typesmap:
+                continue
+            
+            db.Description.tryinsert(typesmap['descriptions'])
+            textdict = db.Description.textdict()
+            
+            for category, typestable in desctables.items():
+                if category in typesmap:
+                    typesdata = typesmap[category]
+                    typesdata = typesdata.assign(
+                        description = typesdata.description.map(textdict),
+                        filing = typesdata.adviser.map(idmap))
+            
+                    typesdata = typesdata.loc[
+                        ~typesdata.description.contains(r'^$|^ +$')
+                            ]
+            
+                    typestable.insertdf(typesdata, extrafields = ['filing'])
+
+def setup():
+    #download_formadvs()
+    db.FormADV.tryinsert(list_formadvs())
+    #processfiles()
+    insertdata()
 
 class FormadvStage(Stage):
     FIELDSPATH = mkpath('config', 'fieldsconfig.json')
@@ -196,58 +323,6 @@ class FormadvStage(Stage):
         df = self.normdf(df, **kwds)
         self.writefile(df, self.get_outfile(date))
         return df
-
-def processfiles(start = 1):
-    advparser = FormadvStage()
-    advparser.info("Starting at entry number {}".format(start))
-    for formadv in db.FormADV.select():
-        if formadv.id >= start:
-            advparser.info("Currently processing '{}'".format(formadv.filename))
-            advparser.normfile(path = formadv.filename, formadv_id = formadv.id)
-
-def insertdata(start = 1):
-    infotables = [db.SecFiler, db.Person, db.Phone, db.Fax, db.Address, db.Website, db.Numbers]
-    desctables = {
-        'client_types' : db.ClientType,
-        'compensation' : db.Compensation,
-        'pct_aum' : db.ClientTypeAUM,
-        'disclosures' : db.Disclosure
-            }
-
-    for formadv in db.FormADV.select():
-        if formadv.id >= start:
-            df = FormadvStage.addnames(
-                readtable(get_outfile(formadv))
-                    ).assign(date = formadv.date)
-    
-            db.Adviser.insertdf(df)
-            db.Filing.insertdf(df, extrafields = [])
-            idmap = db.Filing.getdict(formadv)
-            df['filing'] = df.crd.map(idmap)
-    
-            for table in infotables:
-                inserted = table.insertdf(df, chunksize = 5000)
-    
-            typesmap = FormadvStage.get_types(df)
-            if not typesmap:
-                continue
-
-            db.Description.tryinsert(typesmap['descriptions'])
-            textdict = db.Description.textdict()
-
-            for category, typestable in desctables.items():
-                if category in typesmap:
-                    typesdata = typesmap[category]
-                    typesdata = typesdata.assign(
-                        description = typesdata.description.map(textdict),
-                        filing = typesdata.adviser.map(idmap))
-                    typestable.insertdf(typesdata)
-
-def setup():
-    #download_formadvs()
-    db.FormADV.tryinsert(list_formadvs())
-    #processfiles()
-    insertdata()
 
 pd.DataFrame.addnames = FormadvStage.addnames
 
