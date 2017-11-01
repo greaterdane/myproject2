@@ -1,0 +1,19 @@
+{
+    "production" : {
+        "user": "josh",
+        "passwd": "josh",
+        "host":"192.168.0.17",
+        "local_infile" : 1,
+        "charset" : "utf8",
+        "use_unicode" : "true"
+            },
+
+    "localhost" : {
+        "user": "josh",
+        "passwd": "josh",
+        "host":"127.0.0.1",
+        "local_infile" : 1,
+        "charset" : "utf8",
+        "use_unicode" : "true"
+            }
+}

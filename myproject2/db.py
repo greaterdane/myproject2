@@ -1,5 +1,5 @@
 from stagelib.db import *
-from stagelib import OSPath, from_json, mkpath
+from stagelib import OSPath, mergedicts, from_json, mkpath
 from stagelib import mkdir as newfolder
 
 database = getdb('adviserinfo', hostalias = 'production')
@@ -9,8 +9,8 @@ def setup():
         FormADV,
         Adviser,
         AlternateName,
-        JobTitle,
         Person,
+        Ownership,
         Phone,
         Fax,
         Address,
@@ -27,8 +27,8 @@ def setup():
         Allegation,
         PrivateFund,
         OtherBusiness,
-        BusinessRelation,
-        FundBackOffice],
+        AdviserRelation,
+        FundRelation],
             safe = True)
 
 BaseModel = get_basemodel(database)
@@ -163,13 +163,6 @@ class FilingBaseModel(AdvBaseModel):
     def insertdf(cls, df, extrafields = ['filing'], **kwds):
         return super(FilingBaseModel, cls).insertdf(df,
             extrafields = extrafields, **kwds)
-        
-
-class JobTitle(AdvBaseModel):
-    name = CharField(max_length = 120, unique = True)
-
-    class Meta:
-        db_table = 'jobtitles'
 
 class Person(AdvBaseModel):
     adviser = ForeignKeyField(Adviser, related_name = 'people')
@@ -192,7 +185,12 @@ class Person(AdvBaseModel):
             return 0
         return super(Person, cls).insertdf(df,
             extrafields = extrafields, **kwds)
-        
+
+class Ownership(BaseModel):
+    person = ForeignKeyField(Person, primary_key = True)
+    controlperson = BooleanField(default = True)
+    percentowned = FloatField()
+
 class AlternateName(AdvBaseModel):  #to handle name changes
     adviser = ForeignKeyField(Adviser, related_name = 'alternate_names')
     secnumber = CharField(max_length = 15)
@@ -245,11 +243,6 @@ class Numbers(FilingBaseModel):
     numberofaccts = FloatField(null = True)
     numberofclients = FloatField(null = True)
     numberofemployees = FloatField(null = True)
-    
-    #@classmethod
-    #def insertdf(cls, df, extrafields = ['filing'], **kwds):
-    #    return super(Numbers, cls).insertdf(df.fillna(0),
-    #        extrafields = extrafields, **kwds)
 
 class Description(BaseModel):
     id = PrimaryKeyField(null=False)
@@ -295,17 +288,17 @@ class Disclosure(AdvBaseModel):
 class Courtcase(AdvBaseModel):
     id = PrimaryKeyField(null=False)
     adviser = ForeignKeyField(Adviser, null = False, related_name = 'courtcases')
-    number = CharField(max_length = 30, help_text = "Docket or case number.")
-    district = CharField(max_length = 30)
-    resolution = CharField()
-    renderedfine = FloatField()
-    sanctions = CharField()
+    number = CharField(max_length = 30, help_text = "Docket or case number.", null = True)
+    district = CharField(max_length = 30, null = True)
+    resolution = CharField(null = True)
+    renderedfine = FloatField(null = True)
+    sanctions = CharField(null = True)
     date = DateField()
 
     class Meta:
         db_table = 'courtcases'
 
-class Allegation(AdvBaseModel):
+class Allegation(BaseModel):
     case = ForeignKeyField(Courtcase, primary_key = True)
     allegation = TextField()
 
@@ -314,7 +307,7 @@ class Allegation(AdvBaseModel):
 
 class PrivateFund(AdvBaseModel):
     adviser = ForeignKeyField(Adviser)
-    fund_id = IntegerField()
+    fund_id = CharField(max_length = 20)
     name = CharField(max_length = 255)
     type = CharField(max_length = 100)
     assetsundermgmt = FloatField()
@@ -323,23 +316,45 @@ class PrivateFund(AdvBaseModel):
 
     class Meta:
         db_table = 'privatefunds'
-
-class OtherBusiness(AdvBaseModel):
-    name = CharField(max_length = 255, null = False)
-    type = CharField(max_length = 100, null = False)
-    
-    class Meta:
         indexes = (
-            (('name', 'type'), True),
+            (('adviser', 'fund_id', 'dated'), True),
                 )
 
-class BusinessRelation(AdvBaseModel):
+
+class OtherBusiness(BaseModel):
+    name = CharField(max_length = 255, null = False)
+    type = CharField(max_length = 150, null = False)
+    info = CharField(max_length = 350, null = True)
+    
+    class Meta:
+        db_table = 'other_businesses'
+        indexes = (
+            (('name', 'type', 'info'), True),
+                )
+
+    @classmethod
+    def create_relationship(cls, row, businessrow):
+        entry, created = cls.get_or_create(**businessrow)
+        return mergedicts(row, business = entry.id)
+
+class AdviserRelation(AdvBaseModel):
     business = ForeignKeyField(OtherBusiness)
     adviser = ForeignKeyField(Adviser)
 
-class FundBackOffice(AdvBaseModel):
-    id = PrimaryKeyField()
+    class Meta:
+        db_table = 'adviser_relationships'
+        indexes = (
+            (('business', 'adviser'), True),
+                )
+
+class FundRelation(BaseModel):
     business = ForeignKeyField(OtherBusiness)
     privatefund = ForeignKeyField(PrivateFund)
+
+    class Meta:
+        db_table = 'fund_relationships'
+        indexes = (
+            (('business', 'privatefund'), True),
+                )
     
 setup()
