@@ -11,10 +11,13 @@ from stagelib import (OSPath, Csv, Folder,
 
 from stagelib.web import HomeBrowser, pause, USER_AGENT
 import stagelib.record
+from stagelib.record import getname
 from stagelib.stage import Stage
 
-from db import newfolder
+from db import newfolder, database
 import db
+
+re_PERCENTAGE = re.compile(r'(^\d+)%.*?$')
 
 formadv_folder = newfolder('data', 'formadv')
 preprocessed_folder = newfolder(formadv_folder, 'preprocessed')
@@ -151,6 +154,103 @@ def parse_scheduleDjson(crd):
             for business in fund['businesses']:
                 data.append(mergedicts(business, row))
     return data
+
+def insert_fund(crd, fund):
+    info = fund['fundinfo']
+    _ = fund['fund_id']
+    row = mergedicts({
+        k : (v if k != 'assetsundermgmt' else floating_point(v))
+            for k, v in info.items() if k in db.PrivateFund._meta.fields
+                }, type = info['fundtype'], fund_id = "{}-{}".format(_[0:3], _[3:]),
+                    adviser_id = crd, name = fund['name'])
+    
+    return db.PrivateFund.get_or_create(**row)[0]
+    
+def insert_relationships(crd, data):
+    adviser_relationships = []
+    fund_relationships = []
+    adviser_businesses = data['data']['businesses']
+    for adviser_businessrow in adviser_businesses:
+        adviser_relationship = db.OtherBusiness.create_relationship({'adviser' : crd}, adviser_businessrow)
+        adviser_relationships.append(adviser_relationship)
+
+    if 'funds' in data:
+        funds = data['funds']
+        for fund in funds:
+            fund_businesses = fund['businesses']
+            for fund_businessrow in fund_businesses:
+                db_fund = insert_fund(crd, fund)
+                fund_relationship = db.OtherBusiness.create_relationship(
+                    {'privatefund' : db_fund.id}, fund_businessrow)
+                fund_relationships.append(fund_relationship)
+        db.FundRelation.tryinsert(fund_relationships)
+    db.AdviserRelation.tryinsert(adviser_relationships)
+    
+def insert_people(crd, data):
+    people = data['people']
+    person_list = []
+    with database.atomic():
+        for person in people:
+            row = mergedicts(getname(person['name']), adviser = crd)
+            while True:
+                try:
+                    entry = db.Person.get(**row); break
+                except db.Person.DoesNotExist:
+                    db.Person.insert(**row).execute()
+
+            percentage = re_PERCENTAGE.sub(r'.\1', person['ownership'])
+            is_controlperson = person['controlperson']
+            db.Ownership.get_or_create(person = entry,
+                percentowned = percentage,
+                controlperson = is_controlperson)
+
+            title = ' '.join(x.capitalize() for x in person['title'].split())
+            since = pd.to_datetime(person['since'])
+            (db.Person.update(date = since, title = title)
+                .where((db.Person.firstname == entry.firstname) &
+                    (db.Person.lastname == entry.lastname) &
+                    (db.Person.adviser == crd)).execute())
+    
+def insert_courtcases(crd, data):
+    _ = data['data']
+    if 'regulatory_drps' in _:
+        disclosures = _['regulatory_drps']
+        for case in disclosures:
+            row = mergedicts({
+                k : (floating_point(v) if k == 'rendered_fine' else v)
+                    for k, v in case.items() if k in db.Courtcase._meta.fields
+                        }, adviser = crd)
+
+            entry = db.Courtcase.get_or_create(**row)[0]
+            if case['allegation']:
+                db.Allegation.insert(
+                    case = entry.id,
+                    allegation = case['allegation']
+                        ).execute()
+
+def insert_scheduleDjson(crd):
+    try:
+        adviser = db.Adviser.get(crd = crd)
+        data = adviser.scheduleD
+    except (IOError, db.Adviser.DoesNotExist):
+        return data
+
+    funcmapping = {
+        'businesses' : insert_businesses
+        'people' : insert_people, #db.Person
+        'funds' : insert_funds, #db.PrivateFund,
+        'regulatory_drps' : insert_courtcases, #db.Courtcase,
+            }
+
+    for key, fn in funcmapping.items():
+        try:
+            data = sd_data[key]
+        except KeyError:
+            pass
+    
+    
+    sd_data = adviser.scheduleD
+    data = sd_data['businesses']
 
 def insertdata(start = 1):
     parser = FormadvStage()
