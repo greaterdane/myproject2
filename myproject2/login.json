@@ -2,7 +2,7 @@
     "production" : {
         "user": "josh",
         "passwd": "josh",
-        "host":"192.168.0.17",
+        "host":"xxx.xxx.x.xx",
         "local_infile" : 1,
         "charset" : "utf8",
         "use_unicode" : "true"
