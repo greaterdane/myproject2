@@ -1,6 +1,15 @@
+import re
+import pandas as pd
 from stagelib.db import *
-from stagelib import OSPath, mergedicts, from_json, mkpath
+from stagelib import OSPath, mergedicts, floating_point, from_json, mkpath
 from stagelib import mkdir as newfolder
+from stagelib.record import getname
+
+re_PERCENTAGE = re.compile(r'^(?:[^\d]+)?(\d+)[^\d]+.*?$')
+re_ALLEGATION = re.compile(r'(^.*?)(?:\s+Sanctions:.*?$|$)')
+re_DOLLARAMT = re.compile(r'(\$[\d,\.]+)')
+re_BUSINESSINFO = re.compile(r'(^.*?)(?:\s+CRD.*?$|\s+(?:Not\s+)?Registered.*?$|$)')
+re_NOTBUSINESS = re.compile(r'Public Office|Private Residence')
 
 database = getdb('adviserinfo', hostalias = 'production')
 
@@ -47,6 +56,11 @@ class FormADV(AdvBaseModel):
         indexes = (
             (('date', 'filename'), True),
                 )
+
+    @property
+    def outfile(self):
+        return mkpath(OSPath.dirname(self.filename),
+            self.date.strftime("%m%d%y_output.csv"))
 
     @classmethod
     def datesdict(cls):
@@ -186,6 +200,51 @@ class Person(AdvBaseModel):
         return super(Person, cls).insertdf(df,
             extrafields = extrafields, **kwds)
 
+    @classmethod
+    def addpeople(cls, crd, people):
+        with database.atomic():
+            for person in people:
+                row = mergedicts(getname(person['name']), adviser = crd)
+                while True:
+                    try:
+                        entry = cls.get(**row); break
+                    except cls.DoesNotExist:
+                        cls.insert(**row).execute()
+    
+                try:
+                    percentage = re_PERCENTAGE.sub(r'.\1', person['ownership'])
+                except KeyError:
+                    percentage = '0'
+
+                is_cntrlperson = person['controlperson']
+                try:
+                    Ownership.get_or_create(person = entry,
+                        percentowned = percentage,
+                        controlperson = is_cntrlperson)
+                except IntegrityError as e:
+                    db_logger.error(e)
+    
+                try:
+                    title = ' '.join(x.capitalize() for x in person['title'].split())
+                except KeyError:
+                    title = 'n/a'
+
+                try:
+                    title = ' '.join(x.capitalize() for x in person['title'].split())
+                except KeyError:
+                    title = 'n/a'
+
+                try:
+                    since = pd.to_datetime(person['since'])
+                except (KeyError, Exception) as e:
+                    db_logger.error(e)
+                    since = None
+
+                (cls.update(date = since, title = title)
+                    .where((cls.firstname == entry.firstname) &
+                        (cls.lastname == entry.lastname) &
+                        (cls.adviser == crd)).execute())
+
 class Ownership(BaseModel):
     person = ForeignKeyField(Person, primary_key = True)
     controlperson = BooleanField(default = True)
@@ -298,6 +357,30 @@ class Courtcase(AdvBaseModel):
     class Meta:
         db_table = 'courtcases'
 
+    @classmethod
+    def addcases(cls, crd, disclosures):
+        for case in disclosures:
+            fine = case['renderedfine']
+            if not fine:
+                fine = case['amendedfine']
+                if not fine:
+                    _search = re_DOLLARAMT.search(str(case['sanctions']))
+                    if _search:
+                        fine = _search.group(1)
+            row = mergedicts({
+                k : (floating_point(fine) if k == 'renderedfine'
+                    else pd.to_datetime(v) if k == 'date' else v)
+                    for k, v in case.items() if k in cls._meta.fields
+                        }, adviser = crd)
+    
+            entry = cls.get_or_create(**row)[0]
+            if case['allegation']:
+                try:
+                    Allegation.get_or_create(case = entry.id,
+                        allegation = re_ALLEGATION.sub(r'\1', case['allegation']))
+                except IntegrityError:
+                    pass
+
 class Allegation(BaseModel):
     case = ForeignKeyField(Courtcase, primary_key = True)
     allegation = TextField()
@@ -320,6 +403,26 @@ class PrivateFund(AdvBaseModel):
             (('adviser', 'fund_id', 'dated'), True),
                 )
 
+    @classmethod
+    def addfund(cls, crd, fund):
+        info = fund['fundinfo']
+        _ = fund['fund_id']
+        aum = info['assetsundermgmt']
+        if not aum:
+            aum = 0
+
+        row = mergedicts({
+            k : (v if k != 'assetsundermgmt' else floating_point(aum))
+                for k, v in info.items() if k in cls._meta.fields
+                    }, type = info['fundtype'], fund_id = "{}-{}".format(_[0:3], _[3:]),
+                        adviser_id = crd, name = fund['name'])
+        
+        try:
+            entry = cls.get_or_create(**row)
+        except IntegrityError as e:
+            db_logger.error(e)
+            return cls.get(adviser = crd, fund_id = row['fund_id'])
+        return entry[0]
 
 class OtherBusiness(BaseModel):
     name = CharField(max_length = 255, null = False)
@@ -334,6 +437,11 @@ class OtherBusiness(BaseModel):
 
     @classmethod
     def create_relationship(cls, row, businessrow):
+        if re_NOTBUSINESS.search(businessrow['name']):
+            return
+
+        info = businessrow['info']
+        businessrow['info'] = re_BUSINESSINFO.search(info).group(1).upper()
         entry, created = cls.get_or_create(**businessrow)
         return mergedicts(row, business = entry.id)
 
@@ -347,6 +455,16 @@ class AdviserRelation(AdvBaseModel):
             (('business', 'adviser'), True),
                 )
 
+    @classmethod
+    def create_relationships(cls, crd, businesses):
+        relationships = []
+        for businessrow in businesses:
+            relationship = OtherBusiness.create_relationship({'adviser' : crd}, businessrow)
+            if not relationship:
+                continue
+            relationships.append(relationship)
+        cls.tryinsert(relationships)
+
 class FundRelation(BaseModel):
     business = ForeignKeyField(OtherBusiness)
     privatefund = ForeignKeyField(PrivateFund)
@@ -356,5 +474,22 @@ class FundRelation(BaseModel):
         indexes = (
             (('business', 'privatefund'), True),
                 )
-    
+
+    @classmethod
+    def create_relationships(cls, crd, funds):
+        relationships = []
+        for fund in funds:
+            if 'businesses' not in fund:
+                continue
+
+            businesses = fund['businesses']
+            for businessrow in businesses:
+                dbfund = PrivateFund.addfund(crd, fund)
+                relationship = OtherBusiness.create_relationship(
+                    {'privatefund' : dbfund.id}, businessrow)
+                relationships.append(relationship)
+
+        if relationships:
+            cls.tryinsert(relationships)
+
 setup()
