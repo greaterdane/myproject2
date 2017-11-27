@@ -1,7 +1,8 @@
 from selenium import webdriver
 from stagelib import logging_setup, utcnow
 from stagelib.web import *
-    
+from stagelib import ospath, joinpath, newfolder
+
 class IapdBrowser(HomeBrowser):
     def __init__(self, starturl = 'https://www.adviserinfo.sec.gov'):
         super(IapdBrowser, self).__init__(starturl = starturl)
@@ -36,18 +37,18 @@ def download_formadvs():
     for linktag in br.filterlinks(r'\d{6}\.zip'):
         url = linktag.url
         link = "https://www.sec.gov/%s" % url
-        _ = OSPath.split(link)[-1]
-        br.download(link, outfile = mkpath(zipfolder, _))
+        _ = ospath.split(link)[-1]
+        br.download(link, outfile = joinpath(newfolder('data/formadv/zipfiles'), _))
 
 def get_dailyxml_path():
-    return OSPath.abspath(
+    return ospath.abspath(
         mkpath(xmlfolder,
             utcnow().strftime(r'IA_FIRM_SEC_Feed_%m_%d_%Y.xml.gz')
                 ))
 
 def download_dailyxml():
     xmlpath = get_dailyxml_path()
-    if OSPath.exists(xmlpath):
+    if ospath.exists(xmlpath):
         os.remove(xmlpath)
 
     link = HomeBrowser(
@@ -58,7 +59,7 @@ def download_dailyxml():
     profile.set_preference("general.useragent.override", USER_AGENT)
     profile.set_preference("browser.download.folderList", 2)
     profile.set_preference("browser.download.manager.showWhenStarting", False)
-    profile.set_preference("browser.download.dir", OSPath.abspath(xmlfolder))
+    profile.set_preference("browser.download.dir", ospath.abspath(xmlfolder))
     profile.set_preference("browser.helperApps.neverAsk.saveToDisk", r'application/x-gzip')
     driver = webdriver.Firefox(profile)
     driver.get(r'https://www.adviserinfo.sec.gov/IAPD/InvestmentAdviserData.aspx')
@@ -69,7 +70,7 @@ def download_dailyxml():
 #this needs to go and become a decorator or method in HomeBrowser
 #make generic so you don't have to rewrite scrapers
 
-#if __name__ == '__main__': 
+#if __name__ == '__main__':
 #    self = IapdBrowser()
 #    self._logger = logging_setup(logging.getLogger(), extrakeys = ['crd'], logdir = 'logs')
 #    browsed = set(pd.read_csv('adviserinfo.log',

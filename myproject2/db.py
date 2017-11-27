@@ -1,8 +1,7 @@
 import re
 import pandas as pd
 from stagelib.db import *
-from stagelib import OSPath, mergedicts, floating_point, from_json, mkpath
-from stagelib import mkdir as newfolder
+from stagelib import ospath, Folder, mergedicts, floating_point, readjson, newfolder, joinpath
 from stagelib.record import getname
 
 re_PERCENTAGE = re.compile(r'^(?:[^\d]+)?(\d+)[^\d]+.*?$')
@@ -10,6 +9,11 @@ re_ALLEGATION = re.compile(r'(^.*?)(?:\s+Sanctions:.*?$|$)')
 re_DOLLARAMT = re.compile(r'(\$[\d,\.]+)')
 re_BUSINESSINFO = re.compile(r'(^.*?)(?:\s+CRD.*?$|\s+(?:Not\s+)?Registered.*?$|$)')
 re_NOTBUSINESS = re.compile(r'Public Office|Private Residence')
+
+formadv_folder = newfolder('data', 'formadv')
+zipfolder = newfolder(formadv_folder, 'zipfiles')
+xmlfolder = newfolder(formadv_folder, 'dailyxml')
+preprocessed = newfolder(formadv_folder, 'preprocessed')
 
 database = getdb('adviserinfo', hostalias = 'production')
 
@@ -46,7 +50,7 @@ class AdvBaseModel(BaseModel):
     @classmethod
     def insertdf(cls, df, extrafields = ['filing', 'adviser', 'formadv'], **kwds):
         return super(AdvBaseModel, cls).insertdf(df, extrafields = extrafields, **kwds)
-    
+
 class FormADV(AdvBaseModel):
     date = DateField()
     filename = CharField()
@@ -58,16 +62,20 @@ class FormADV(AdvBaseModel):
                 )
 
     @property
+    def unzipped(self):
+        return Folder.listdir(  joinpath('unzipped',
+            newfolder(self.date.strftime("%Y%m%d"))  )  )[0]
+
+    @property
     def outfile(self):
-        return mkpath(OSPath.dirname(self.filename),
-            self.date.strftime("%m%d%y_output.csv"))
+        return joinpath(preprocessed, self.date.strftime("%m%d%y_output.csv"))
 
     @classmethod
     def datesdict(cls):
         return cls.getdict('date')
 
     def __repr__(self):
-        return self.date.strftime("FormADV: {}/%Y-%m-%d".format(OSPath.basename(self.filename)))
+        return self.date.strftime("FormADV: {}/%Y-%m-%d".format(ospath.basename(self.filename)))
 
 class Adviser(AdvBaseModel):
     crd = IntegerField(null = False, constraints = [Check('crd > 0')], index = True, primary_key = True)
@@ -87,14 +95,14 @@ class Adviser(AdvBaseModel):
             namechanges = df.loc[
                 (df.crd.isin(fromdb.crd)) & ~(df.name.replace(',', '').isin(fromdb.name.replace(',', '')))
                     ].ix[:, ['crd', 'secnumber', 'name', 'legalname']]
-    
+
             oldnames = fromdb.loc[
                 fromdb.crd.isin(namechanges.crd)
                     ].rename(columns = {'crd' : 'adviser'})
-            
+
             for change in namechanges.to_dict(orient = 'records'):
                 cls.update(**change).where(cls.crd == change['crd']).execute()
-    
+
             AlternateName.insertdf(oldnames)
             df = df.loc[~df.crd.isin(namechanges.crd)]
 
@@ -123,7 +131,7 @@ class Adviser(AdvBaseModel):
 class Filing(AdvBaseModel):
     adviser = ForeignKeyField(Adviser, related_name = "filings")
     formadv = ForeignKeyField(FormADV, related_name = "all_filings")
-    
+
     class Meta:
         db_table = 'filings'
         order_by = ('formadv', )
@@ -139,7 +147,7 @@ class Filing(AdvBaseModel):
             fn.MAX(alias.id).alias('most_recent'))
             .group_by(alias.adviser)
             .alias('most_recent_subquery'))
-        
+
         mostrecent = (
             cls.select(cls.id.alias("filing_id"), Adviser.crd)
             .join(Adviser)
@@ -150,7 +158,7 @@ class Filing(AdvBaseModel):
                     )
 
         return cls.to_dataframe(mostrecent)
-    
+
     @classmethod
     def getdict(cls, formadv):
         rows = cls.to_records(cls.select()
@@ -172,7 +180,7 @@ class FilingBaseModel(AdvBaseModel):
 
     class Meta:
         order_by = ('filing', )
-    
+
     @classmethod
     def insertdf(cls, df, extrafields = ['filing'], **kwds):
         return super(FilingBaseModel, cls).insertdf(df,
@@ -210,7 +218,7 @@ class Person(AdvBaseModel):
                         entry = cls.get(**row); break
                     except cls.DoesNotExist:
                         cls.insert(**row).execute()
-    
+
                 try:
                     percentage = re_PERCENTAGE.sub(r'.\1', person['ownership'])
                 except KeyError:
@@ -223,7 +231,7 @@ class Person(AdvBaseModel):
                         controlperson = is_cntrlperson)
                 except IntegrityError as e:
                     db_logger.error(e)
-    
+
                 try:
                     title = ' '.join(x.capitalize() for x in person['title'].split())
                 except KeyError:
@@ -284,7 +292,7 @@ class Address(FilingBaseModel):
     state = CharField(max_length = 2)
     zip = CharField(max_length = 15)
     country = CharField(max_length = 25)
-    
+
     class Meta:
         indexes = (
             (('address1', 'address2', 'city', 'state', 'zip', 'country', ), True),
@@ -372,7 +380,7 @@ class Courtcase(AdvBaseModel):
                     else pd.to_datetime(v) if k == 'date' else v)
                     for k, v in case.items() if k in cls._meta.fields
                         }, adviser = crd)
-    
+
             entry = cls.get_or_create(**row)[0]
             if case['allegation']:
                 try:
@@ -416,7 +424,7 @@ class PrivateFund(AdvBaseModel):
                 for k, v in info.items() if k in cls._meta.fields
                     }, type = info['fundtype'], fund_id = "{}-{}".format(_[0:3], _[3:]),
                         adviser_id = crd, name = fund['name'])
-        
+
         try:
             entry = cls.get_or_create(**row)
         except IntegrityError as e:
@@ -428,7 +436,7 @@ class OtherBusiness(BaseModel):
     name = CharField(max_length = 255, null = False)
     type = CharField(max_length = 150, null = False)
     info = CharField(max_length = 350, null = True)
-    
+
     class Meta:
         db_table = 'other_businesses'
         indexes = (
