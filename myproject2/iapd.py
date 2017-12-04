@@ -1,6 +1,6 @@
 from db import *
 from stage import *
-from stagelib.files import fileunzip
+from stagelib.files import ospath, fileunzip
 from scraper import download_formadvs
 from stagelib.cli import Processor, Normalize
 
@@ -14,11 +14,15 @@ def list_formadvs():
             ], key = lambda k: k['date'])
 
 def setup(start = 1):
-    unzipped = newfolder(zipfolder, 'unzipped')
     download_formadvs()
     FormADV.tryinsert(list_formadvs())
     for row in FormADV.select():
-        fileunzip(row.filename, outdir = ospath.dirname(row.unzipped))
+        if not ospath.exists(row.unzippedfile):
+            fileunzip(row.filename, row.unzippedfolder)
+
         if row.id < start:
             continue
-        FormadvStage.processfile(row.unzipped, formadv_id = row, outfile = row.outfile)
+        FormadvStage.processfile(row.unzippedfile,
+                                 formadv_id = row,
+                                 skiprows = 0,
+                                 outfile = row.outfile)

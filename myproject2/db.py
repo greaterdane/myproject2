@@ -1,4 +1,5 @@
 import re
+from functools import partial
 import pandas as pd
 from stagelib.db import *
 from stagelib import ospath, Folder, mergedicts, floating_point, readjson, newfolder, joinpath
@@ -11,9 +12,12 @@ re_BUSINESSINFO = re.compile(r'(^.*?)(?:\s+CRD.*?$|\s+(?:Not\s+)?Registered.*?$|
 re_NOTBUSINESS = re.compile(r'Public Office|Private Residence')
 
 formadv_folder = newfolder('data', 'formadv')
-zipfolder = newfolder(formadv_folder, 'zipfiles')
-xmlfolder = newfolder(formadv_folder, 'dailyxml')
-preprocessed = newfolder(formadv_folder, 'preprocessed')
+advfolder = partial(newfolder, formadv_folder)
+zipfolder = advfolder('zipfiles')
+unzippedfolder = advfolder('unzipped')
+xmlfolder = advfolder('dailyxml')
+
+preprocessed = advfolder('preprocessed')
 
 database = getdb('adviserinfo', hostalias = 'production')
 
@@ -62,13 +66,18 @@ class FormADV(AdvBaseModel):
                 )
 
     @property
-    def unzipped(self):
-        return Folder.listdir(  joinpath('unzipped',
-            newfolder(self.date.strftime("%Y%m%d"))  )  )[0]
+    def unzippedfolder(self):
+        return newfolder(unzippedfolder, self.date.strftime("%Y%m%d"))
+
+    @property
+    def unzippedfile(self):
+        for filename in Folder.listdir(self.unzippedfolder):
+            return filename
 
     @property
     def outfile(self):
-        return joinpath(preprocessed, self.date.strftime("%m%d%y_output.csv"))
+        return joinpath(preprocessed,
+            self.date.strftime("%m%d%y_output.csv"))
 
     @classmethod
     def datesdict(cls):

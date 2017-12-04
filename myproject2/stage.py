@@ -4,7 +4,7 @@ import pandas as pd
 from stagelib import (ospath, File, Csv, Folder, joinpath,
                       to_single_space, mergedicts, chunker,
                       floating_point, readjson, writejson)
-import stagelib.record
+from stagelib.record import addressconcat, addressdisect
 from stagelib.stage import Stage
 
 re_PERCENTAGE = re.compile(r'(^\d+)%.*?$')
@@ -45,7 +45,8 @@ re_NUMBERSPECIFY = re.compile('^More than')
 
 class FormadvStage(Stage):
     def __init__(self, formadv_id = None):
-        super(FormadvStage, self).__init__('formadv', fieldspath = r'config/fieldsconfig.json')
+        super(FormadvStage, self).__init__('formadv', formadv_id = None, fieldspath = r'config/fieldsconfig.json')
+        self.errorcatch = None
         if formadv_id:
             if isinstance(formadv_id, int):
                 self.formadv = FormADV.get(id = formadv_id)
@@ -53,23 +54,19 @@ class FormadvStage(Stage):
                 self.formadv = formadv_id
 
     @classmethod
-    def processfiles(cls, start = 1, **kwds):
-        advprsr = cls()
-        advprsr.info("Starting at entry number {}".format(start))
-        for formadv in FormADV.select():
-            if formadv.id >= start:
-                advprsr.info("Currently processing '{}'".format(formadv.filename))
-                advprsr.normfile(formadv)
+    def processfile(cls, path, formadv_id = None, *args, **kwds):
+        return super(FormadvStage, cls).processfile(path, formadv_id, **kwds)
 
     @staticmethod
     def get_number(df, field = 'numberofclients'):
         data = df[field].copy()
-        mask = data.notnull()
-        data.loc[data.contains(re_NUMBERSPECIFY)] = np.nan
-        __ = df.loc[mask, '{}_specify'.format(field)]
-        return data.modify(mask,
-            data.fillna(__)).quickmap(numericrank)
+        data = data.modify(data.contains(re_NUMBERSPECIFY), np.nan)
+        __ = df.loc[data.notnull(),
+                    '{}_specify'.format(field)]
 
+        return data.modify(data.notnull(),
+                           data.fillna(__)
+                            ).quickmap(numericrank)
     @staticmethod
     def cleantext(text, key):
         if text.startswith(key):
@@ -149,7 +146,6 @@ class FormadvStage(Stage):
             adviser = df.crd,
             numberofclients = self.get_number(df),
             numberofemployees = self.get_number(df, field = 'numberofemployees'),
-            date = formadv.date,
-                ).addnames()
-
-pd.DataFrame.addnames = FormadvStage.addnames
+            date = self.formadv.date,
+            address = addressconcat(df)
+                )
